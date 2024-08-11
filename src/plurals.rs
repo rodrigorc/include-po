@@ -52,6 +52,49 @@ impl BinOp {
 
 const PRECEDENCE_NOT: u32 = 7;
 
+/// Other tokens.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum Token {
+    LParen, RParen,
+    Neg,
+    Question, Colon,
+    N,
+}
+
+fn next_token(input: &str) -> IResult<&str, Token> {
+    let (input, _) = multispace0(input)?;
+    use Token::*;
+    let res = alt((
+        char('n').map(|_| N),
+        char('(').map(|_| LParen),
+        char(')').map(|_| RParen),
+        char('!').map(|_| Neg),
+        char('?').map(|_| Question),
+        char(':').map(|_| Colon),
+    ))(input)?;
+    Ok(res)
+}
+
+fn number(input: &str) -> IResult<&str, u32> {
+    let (input, _) = multispace0(input)?;
+    let (input, n) = digit1(input)?;
+    match n.parse() {
+        Ok(n) => Ok((input, n)),
+        Err(_) => Err(Err::Error(Error::from_error_kind(input, ErrorKind::Tag))),
+    }
+}
+
+fn token(tok: Token) -> impl Fn(&str) -> IResult<&str, Token> {
+    move |input| {
+        let (input, next) = next_token(input)?;
+        if tok == next {
+            Ok((input, next))
+        } else {
+            Err(Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     N,
@@ -201,67 +244,6 @@ impl std::fmt::Display for BinOp {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum Token {
-    LParen, RParen,
-    Op(BinOp),
-    Neg,
-    Question, Colon,
-    Number(u32),
-    N,
-}
-
-fn next_token(input: &str) -> IResult<&str, Token> {
-    let (input, _) = multispace0(input)?;
-    use Token::*;
-    use BinOp::*;
-    let res = alt((
-        tag("&&").map(|_| Op(And)),
-        tag("||").map(|_| Op(Or)),
-        tag("==").map(|_| Op(Eq)),
-        tag("!=").map(|_| Op(Ne)),
-        tag(">=").map(|_| Op(Ge)),
-        tag("<=").map(|_| Op(Le)),
-        map_res(digit1, |n: &str| { let n = n.parse()?; Ok::<_, std::num::ParseIntError>(Number(n)) }),
-        char('n').map(|_| N),
-        char('(').map(|_| LParen),
-        char(')').map(|_| RParen),
-        char('+').map(|_| Op(Add)),
-        char('-').map(|_| Op(Sub)),
-        char('*').map(|_| Op(Mult)),
-        char('/').map(|_| Op(Div)),
-        char('%').map(|_| Op(Mod)),
-        char('!').map(|_| Neg),
-        char('>').map(|_| Op(Gt)),
-        char('<').map(|_| Op(Lt)),
-        char('?').map(|_| Question),
-        char(':').map(|_| Colon),
-    ))(input)?;
-    Ok(res)
-}
-
-fn number() -> impl Fn(&str) -> IResult<&str, u32> {
-    move |input| {
-        let (input, next) = next_token(input)?;
-        if let Token::Number(n) = next {
-            Ok((input, n))
-        } else {
-            Err(Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
-        }
-    }
-}
-
-fn token(tok: Token) -> impl Fn(&str) -> IResult<&str, Token> {
-    move |input| {
-        let (input, next) = next_token(input)?;
-        if tok == next {
-            Ok((input, next))
-        } else {
-            Err(Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
-        }
-    }
-}
-
 macro_rules! expression_left_assoc {
     ($name:ident, $operator:expr, $next:ident) => {
         fn $name<'i>(input: &str) -> IResult<&str, Expr> {
@@ -276,21 +258,35 @@ macro_rules! expression_left_assoc {
     };
 }
 
-fn bin_op(op: BinOp) -> impl Fn(&str) -> IResult<&str, BinOp> {
-    move |input| {
-        map(token(Token::Op(op)), |_| op)(input)
-    }
+fn bin_op(input: &str) -> IResult<&str, BinOp> {
+    let (input, _) = multispace0(input)?;
+    use BinOp::*;
+    let res = alt((
+        tag("&&").map(|_| And),
+        tag("||").map(|_| Or),
+        tag("==").map(|_| Eq),
+        tag("!=").map(|_| Ne),
+        tag(">=").map(|_| Ge),
+        tag("<=").map(|_| Le),
+        char('+').map(|_| Add),
+        char('-').map(|_| Sub),
+        char('*').map(|_| Mult),
+        char('/').map(|_| Div),
+        char('%').map(|_| Mod),
+        char('>').map(|_| Gt),
+        char('<').map(|_| Lt),
+    ))(input)?;
+    Ok(res)
 }
 
 fn bin_op_any(ops: &[BinOp]) -> impl Fn(&str) -> IResult<&str, BinOp> + '_ {
     move |input| {
-        let (input, next) = next_token(input)?;
-        if let Token::Op(op) = next {
-            if ops.contains(&op) {
-                return Ok((input, op));
-            }
-        };
-        Err(Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
+        let (input, next) = bin_op(input)?;
+        if ops.contains(&next) {
+            Ok((input, next))
+        } else {
+            Err(Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
+        }
     }
 }
 
@@ -318,8 +314,8 @@ fn expression_cond(input: &str) -> IResult<&str, Expr> {
     Ok((input, expr))
 }
 
-expression_left_assoc!{expression_or, bin_op(BinOp::Or), expression_and}
-expression_left_assoc!{expression_and, bin_op(BinOp::And), expression_equal}
+expression_left_assoc!{expression_or, bin_op_any(&[BinOp::Or]), expression_and}
+expression_left_assoc!{expression_and, bin_op_any(&[BinOp::And]), expression_equal}
 expression_left_assoc!{expression_equal, bin_op_any(&[BinOp::Eq, BinOp::Ne]), expression_not_equal}
 expression_left_assoc!{expression_not_equal, bin_op_any(&[BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge]), expression_add}
 expression_left_assoc!{expression_add, bin_op_any(&[BinOp::Add, BinOp::Sub]), expression_mult}
@@ -335,7 +331,7 @@ fn expression_neg(input: &str) -> IResult<&str, Expr> {
 fn expression_simple(input: &str) -> IResult<&str, Expr> {
     alt((
         token(Token::N).map(|_| Expr::N),
-        number().map(|n| Expr::Const(n)),
+        number.map(|n| Expr::Const(n)),
         delimited(token(Token::LParen), expression_cond, token(Token::RParen)),
     ))(input)
 }
@@ -344,23 +340,6 @@ fn expression_simple(input: &str) -> IResult<&str, Expr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn tokens(input: &str) -> IResult<&str, Vec<Token>> {
-        terminated(
-            many0(next_token),
-            pair(multispace0, eof),
-        )(input)
-    }
-
-    #[test]
-    fn tokenize() {
-        use Token::*;
-        use BinOp::*;
-        assert_eq!(
-            tokens("  (0 + 234 - n == < <= ! !=) ==== ").unwrap().1,
-            vec![LParen, Number(0), Op(Add), Number(234), Op(Sub), N, Op(Eq), Op(Lt), Op(Le), Neg, Op(Ne), RParen, Op(Eq), Op(Eq)]
-        );
-    }
 
     fn refmt(s: &str) -> String {
         let e = expression(s).unwrap().1;

@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-thiserror = "*"
-nom = "*"
+thiserror = "1"
+nom = "7"
+tr = { version = "0.1.10", default-features = false }

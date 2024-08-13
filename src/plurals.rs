@@ -1,5 +1,15 @@
-// Reference implementation:
-// https://github.com/autotools-mirror/gettext/blob/master/gettext-runtime/intl/plural.y
+/// Module to parse and reformat plural expressions
+///
+/// PO files have the plural expression in a header, written as a single in C-like expression,
+/// usually with heavy use of the ternary conditional operator (?:).
+///
+/// We need to convert that expression into an quivalent Rust expression. This module does two
+/// things:
+///  * Parse the PO expression.
+///  * Format the Rust expression.
+///
+/// Reference implementation:
+/// https://github.com/autotools-mirror/gettext/blob/master/gettext-runtime/intl/plural.y
 
 use nom::{
     *,
@@ -32,25 +42,28 @@ impl BinOp {
         use BinOp::*;
         use Type::*;
         match self {
-            Add | Sub | Mult | Div | Mod | Eq | Ne | Gt | Ge | Lt | Le => Int,
+            Add | Sub | Mult | Div | Mod => Int,
+            // Do not compare boolean values, that way the non-assciativy of Rust's
+            // comparison operators won't be an issue
+            Eq | Ne | Gt | Ge | Lt | Le => Int,
             And | Or => Bool,
         }
     }
+    // This is the precedence of the output expression, ie, that of Rust
     fn fmt_precedence(&self) -> u32 {
         use BinOp::*;
         match self {
             Or => 1,
             And => 2,
-            Eq | Ne => 3,
-            Gt | Ge | Lt | Le => 4,
-            Add | Sub => 5,
-            Mult | Div | Mod => 6,
-            // Unary Not would be 7
+            Eq | Ne | Gt | Ge | Lt | Le => 3,
+            Add | Sub => 4,
+            Mult | Div | Mod => 5,
+            // Unary Not has maximum precedence
         }
     }
 }
 
-const PRECEDENCE_NOT: u32 = 7;
+const PRECEDENCE_NOT: u32 = 6;
 
 /// Other tokens.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -77,11 +90,8 @@ fn next_token(input: &str) -> IResult<&str, Token> {
 
 fn number(input: &str) -> IResult<&str, u32> {
     let (input, _) = multispace0(input)?;
-    let (input, n) = digit1(input)?;
-    match n.parse() {
-        Ok(n) => Ok((input, n)),
-        Err(_) => Err(Err::Error(Error::from_error_kind(input, ErrorKind::Tag))),
-    }
+    let (input, n) = u32(input)?;
+    Ok((input, n))
 }
 
 fn token(tok: Token) -> impl Fn(&str) -> IResult<&str, Token> {
@@ -117,6 +127,9 @@ impl Expr {
         let (_, expr) = expression(input)?;
         Ok(expr)
     }
+    fn new_bin(e1: Expr, op: BinOp, e2: Expr) -> Expr {
+        Expr::Binary(Box::new(e1), op, Box::new(e2))
+    }
     fn get_type(&self) -> Type {
         use Expr::*;
         use Type::*;
@@ -151,6 +164,7 @@ impl std::fmt::Display for TypedExpr<'_> {
         use Expr::*;
         use Type::*;
         let TypedExpr{ e, ty, precedence } = *self;
+        let paren = |p| if p { ("(",")") } else { ("","") };
         match ty {
             Some(ty) => {
                 let my = e.get_type();
@@ -159,10 +173,10 @@ impl std::fmt::Display for TypedExpr<'_> {
                 } else {
                     match ty {
                         Bool => {
-                            let paren = precedence > BinOp::Ne.fmt_precedence();
-                            if paren { write!(f, "(")?; }
-                            write!(f, "{} != 0", untyped(e, BinOp::Ne.fmt_precedence()))?;
-                            if paren { write!(f, ")")?; }
+                            // I don't this these parentheses can ever be printed, because of the
+                            // trick in Neg/Int, but just in case.
+                            let (pl, pr) = paren(precedence > BinOp::Ne.fmt_precedence());
+                            write!(f, "{pl}{} != 0{pr}", untyped(e, BinOp::Ne.fmt_precedence()))?;
                         }
                         Int => {
                             write!(f, "u32::from({})", untyped(e, 0))?;
@@ -177,27 +191,23 @@ impl std::fmt::Display for TypedExpr<'_> {
                     Neg(e) => {
                         match e.get_type() {
                             Bool => {
-                                let paren = precedence > PRECEDENCE_NOT;
-                                if paren { write!(f, "(")?; }
+                                // ! has maximum precedence, will never need parentheses
                                 write!(f, "!{}", untyped(e, PRECEDENCE_NOT))?;
-                                if paren { write!(f, ")")?; }
                             }
-                            // !(a != 0) => a == 0
+                            // Convert '!(a != 0)' to 'a == 0'
                             Int => {
-                                let paren = precedence > BinOp::Eq.fmt_precedence();
-                                if paren { write!(f, "(")?; }
-                                write!(f, "{} == 0", untyped(e, BinOp::Eq.fmt_precedence()))?;
-                                if paren { write!(f, ")")?; }
+                                let (pl, pr) = paren(precedence > BinOp::Eq.fmt_precedence());
+                                write!(f, "{pl}{} == 0{pr}", untyped(e, BinOp::Eq.fmt_precedence()))?;
                             }
                         }
                     }
                     Binary(e1, op, e2) => {
                         let ty = op.arg_type();
                         let prec = op.fmt_precedence();
-                        let paren = precedence > prec;
-                        if paren { write!(f, "(")?; }
-                        write!(f, "{} {op} {}", typed(e1, ty, prec), typed(e2, ty, prec + 1))?;
-                        if paren { write!(f, ")")?; }
+                        let (pl, pr) = paren(precedence > prec);
+                        // increase the required precedence for the rhs, because of the left
+                        // associativity.
+                        write!(f, "{pl}{} {op} {}{pr}", typed(e1, ty, prec), typed(e2, ty, prec + 1))?;
                     }
                     Cond(e1, e2, e3) => {
                         // Chained if / else / if don't need the second pair of braces.
@@ -244,18 +254,26 @@ impl std::fmt::Display for BinOp {
     }
 }
 
-macro_rules! expression_left_assoc {
-    ($name:ident, $operator:expr, $next:ident) => {
-        fn $name<'i>(input: &str) -> IResult<&str, Expr> {
-            let (input, expr1) = $next(input)?;
-            let mut expr1 = Some(expr1);
-            let (input, expr) = fold_many0(pair($operator, $next),
-                    || expr1.take().unwrap(),
-                    |e1, (op, e2)| Expr::Binary(Box::new(e1), op, Box::new(e2))
-                )(input)?;
-            Ok((input, expr))
-        }
-    };
+pub fn left_assoc<I, O, OP, E: ParseError<I>, F, G, H>(
+    mut operator: F,
+    mut next: G,
+    mut combine: H,
+) -> impl FnMut(I) -> IResult<I, O, E>
+where
+    I: Clone + InputLength,
+    F: Parser<I, OP, E>,
+    G: Parser<I, O, E>,
+    H: FnMut(O, OP, O) -> O,
+{
+    move |input: I| {
+        let (input, expr1) = next.parse(input)?;
+        let mut expr1 = Some(expr1);
+        let (input, expr) = fold_many0(pair(|i| operator.parse(i), |i| next.parse(i)),
+            || expr1.take().unwrap(),
+            |e1, (op, e2)| combine(e1, op, e2)
+        )(input)?;
+        Ok((input, expr))
+    }
 }
 
 fn bin_op(input: &str) -> IResult<&str, BinOp> {
@@ -314,12 +332,29 @@ fn expression_cond(input: &str) -> IResult<&str, Expr> {
     Ok((input, expr))
 }
 
-expression_left_assoc!{expression_or, bin_op_any(&[BinOp::Or]), expression_and}
-expression_left_assoc!{expression_and, bin_op_any(&[BinOp::And]), expression_equal}
-expression_left_assoc!{expression_equal, bin_op_any(&[BinOp::Eq, BinOp::Ne]), expression_not_equal}
-expression_left_assoc!{expression_not_equal, bin_op_any(&[BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge]), expression_add}
-expression_left_assoc!{expression_add, bin_op_any(&[BinOp::Add, BinOp::Sub]), expression_mult}
-expression_left_assoc!{expression_mult, bin_op_any(&[BinOp::Mult, BinOp::Div, BinOp::Mod]), expression_neg}
+fn expression_or(input: &str) -> IResult<&str, Expr> {
+    left_assoc(bin_op_any(&[BinOp::Or]), expression_and, Expr::new_bin)(input)
+}
+
+fn expression_and(input: &str) -> IResult<&str, Expr> {
+    left_assoc(bin_op_any(&[BinOp::And]), expression_equal, Expr::new_bin)(input)
+}
+
+fn expression_equal(input: &str) -> IResult<&str, Expr> {
+    left_assoc(bin_op_any(&[BinOp::Eq, BinOp::Ne]), expression_not_equal, Expr::new_bin)(input)
+}
+
+fn expression_not_equal(input: &str) -> IResult<&str, Expr> {
+    left_assoc(bin_op_any(&[BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge]), expression_add, Expr::new_bin)(input)
+}
+
+fn expression_add(input: &str) -> IResult<&str, Expr> {
+    left_assoc(bin_op_any(&[BinOp::Add, BinOp::Sub]), expression_mult, Expr::new_bin)(input)
+}
+
+fn expression_mult(input: &str) -> IResult<&str, Expr> {
+    left_assoc(bin_op_any(&[BinOp::Mult, BinOp::Div, BinOp::Mod]), expression_neg, Expr::new_bin)(input)
+}
 
 fn expression_neg(input: &str) -> IResult<&str, Expr> {
     alt((
@@ -331,7 +366,7 @@ fn expression_neg(input: &str) -> IResult<&str, Expr> {
 fn expression_simple(input: &str) -> IResult<&str, Expr> {
     alt((
         token(Token::N).map(|_| Expr::N),
-        number.map(|n| Expr::Const(n)),
+        number.map(Expr::Const),
         delimited(token(Token::LParen), expression_cond, token(Token::RParen)),
     ))(input)
 }
@@ -385,7 +420,7 @@ mod tests {
         );
     }
     #[test]
-    fn expr_neg() {
+    fn expr_bool() {
         assert_eq!(
             refmt("!!!n"),
             "!!(n == 0)"

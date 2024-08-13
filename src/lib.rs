@@ -1,11 +1,17 @@
 use std::io::{BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 mod plurals;
 
 #[derive(Error, Debug)]
 pub enum PoIncludeError {
+    #[error("Invalid path '{0}'")]
+    InvalidPath(PathBuf),
+    #[error("Non-UTF-8 PO file '{0}'")]
+    NonUtf8PoFile(PathBuf),
+    #[error("Invalid plural expression")]
+    PluralError,
     #[error(transparent)]
     Io { #[from] source: std::io::Error },
 }
@@ -15,14 +21,15 @@ pub type Result<T> = std::result::Result<T, PoIncludeError>;
 pub fn generate_locales_from_dir(po_dir: impl AsRef<Path>, out_path: impl AsRef<Path>) -> Result<()> {
     let po_dir = po_dir.as_ref();
     let out_path = out_path.as_ref();
-    let out_dir = out_path.parent().expect("No directory in output path");
+    let out_dir = out_path.parent().ok_or_else(|| PoIncludeError::InvalidPath(out_path.to_owned()))?;
     if !out_dir.is_dir() {
         std::fs::create_dir_all(out_dir)?;
     }
 
     let out = std::fs::File::create(out_path)?;
     let mut out = std::io::BufWriter::new(out);
-    writeln!(out, r#"#[path = "{}"]"#, std::path::absolute(out_dir).unwrap().display())?;
+    let mod_path = std::path::absolute(out_dir)?;
+    writeln!(out, r#"#[path = "{}"]"#, mod_path.display())?;
     writeln!(out, r#"
 #[allow(unused_variables)]
 pub mod translators {{
@@ -37,8 +44,9 @@ pub mod translators {{
         }
         let Some(lang) = path.file_stem() else { continue };
         let lang = lang.to_ascii_lowercase();
-        let lang = lang.to_str().unwrap().to_owned();
-        generate_rs_from_po(path, out_dir.join(&format!("{lang}.rs")))?;
+        let Some(lang) = lang.to_str() else { continue };
+        let lang = lang.to_owned();
+        generate_rs_from_po(path, out_dir.join(format!("{lang}.rs")))?;
         println!("cargo:rerun-if-changed={}", entry.path().display());
 
         writeln!(out, "pub mod {lang};")?;
@@ -129,7 +137,7 @@ pub fn parse_po(po_path: impl AsRef<Path>) -> Result<(Vec<Message>, Vec<PMessage
                 continue;
             }
             Some('"') => {
-                text.push_str(&unquote(line));
+                text.push_str(unquote(line));
                 continue;
             }
             _ => {
@@ -157,7 +165,7 @@ pub fn parse_po(po_path: impl AsRef<Path>) -> Result<(Vec<Message>, Vec<PMessage
         // start of next entry or separator or end of file
         if next_key.is_empty() || next_key == "msgid" {
             let mut msgs = std::mem::take(&mut msgs);
-            if msgs.len() > 0 {
+            if !msgs.is_empty() {
                 match (id.take(), id_plural.take(), ) {
                     (Some(id), None) => {
                         messages.push(Message {
@@ -187,36 +195,52 @@ pub fn parse_po(po_path: impl AsRef<Path>) -> Result<(Vec<Message>, Vec<PMessage
     Ok((messages, pmessages))
 }
 
+fn split_at_char(s: &str, c: char) -> Option<(&str, &str)> {
+    let pos = s.find(c)?;
+    let a = s[.. pos].trim();
+    let b = s[pos + c.len_utf8() ..].trim();
+    Some((a, b))
+}
+
 pub fn generate_rs_from_po(po_path: impl AsRef<Path>, out_path: impl AsRef<Path>) -> Result<()> {
     use std::collections::BTreeMap;
 
+    let po_path = po_path.as_ref();
     let (messages, pmessages) = parse_po(po_path)?;
 
 
     let mut plural_count: usize = 2;
     let mut plural_expr = plurals::Expr::default();
-    let descr = &messages.iter().find(|m| m.id.is_empty()).as_ref().unwrap().text;
-    // The description looks like HTML headers
-    for header in descr.split("\\n") {
-        let Some(colon) = header.find(':') else { continue };
-        let name = header[.. colon].trim();
-        let value = header[colon + 1 ..].trim();
-        match name.to_lowercase().as_str() {
-            "content-type" => {
-                if value.contains("charset=") && !value.contains("=UTF-8") {
-                    panic!("Only UTF-8 po files, please");
+    // The empty string is translated as the "description", that looks HTML headers
+    if let Some(descr) = messages.iter().find(|m| m.id.is_empty()).as_ref().map(|m| m.text.as_str()) {
+        // TODO: maybe we should unescape the text, but it doesn't seem to be too necessary
+        for header in descr.split("\\n") {
+            let Some((name, value)) = split_at_char(header, ':') else { continue };
+            match name.to_lowercase().as_str() {
+                "content-type" => {
+                    for field in value.split(';') {
+                        let Some((n, v)) = split_at_char(field, '=') else { continue };
+                        if n == "charset" && v != "UTF-8" {
+                            return Err(PoIncludeError::NonUtf8PoFile(po_path.to_owned()));
+                        }
+                    }
                 }
+                "plural-forms" => {
+                    for field in value.split(';') {
+                        let Some((n, v)) = split_at_char(field, '=') else { continue };
+                        match n {
+                            "nplurals" => {
+                                plural_count = v.parse().map_err(|_| PoIncludeError::PluralError)?;
+                            }
+                            "plural" => {
+                                plural_expr = plurals::Expr::parse(v).map_err(|_| PoIncludeError::PluralError)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
-            "plural-forms" => {
-                let values: Vec<_> = value.split(";").collect();
-                plural_count = values[0].split("=").collect::<Vec<_>>()[1].parse().unwrap();
-
-                let str_plural = values[1];
-                let eq = str_plural.find('=').unwrap();
-                let str_plural = str_plural[eq + 1 ..].trim();
-                plural_expr = plurals::Expr::parse(str_plural).unwrap();
-            }
-            _ => {}
         }
     }
 

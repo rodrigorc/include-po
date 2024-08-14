@@ -2,6 +2,12 @@
 name = "include-po"
 version = "0.1.0"
 edition = "2021"
+description = "Convert message catalogs (PO files) into Rust modules"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/rodrigorc/include-po"
+categories = ["localization", "internationalization"]
+keywords = ["gettext", "i18n", "l10n", "translation"]
 
 [dependencies]
 thiserror = "1"

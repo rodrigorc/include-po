@@ -9,6 +9,9 @@ repository = "https://github.com/rodrigorc/include-po"
 categories = ["localization", "internationalization"]
 keywords = ["gettext", "i18n", "l10n", "translation"]
 
+[lib]
+doctest = false
+
 [dependencies]
 thiserror = "1"
 nom = "7"

@@ -362,6 +362,7 @@ pub fn number_index(n: u64) -> u32 {{
     {plural_expr}
 }}
 
+#[allow(clippy::match_single_binding)]
 impl ::tr::Translator for Translator {{
     fn translate<'a>(&'a self, string: &'a str, context: Option<&'a str>) -> Cow<'a, str> {{
         let s = match context {{

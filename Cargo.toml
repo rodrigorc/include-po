@@ -14,5 +14,6 @@ doctest = false
 
 [dependencies]
 thiserror = "2"
-nom = "7"
+nom = "8"
+nom-language = "0.1"
 tr = { version = "0.1.10", default-features = false }

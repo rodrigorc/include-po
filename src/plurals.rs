@@ -15,12 +15,12 @@ use nom::{
     *,
     branch::*,
     combinator::*,
-    multi::*,
     sequence::*,
     bytes::complete::*,
     character::complete::*,
     error::*,
 };
+use nom_language::precedence::left_assoc;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BinOp {
@@ -84,7 +84,7 @@ fn next_token(input: &str) -> IResult<&str, Token> {
         char('!').map(|_| Neg),
         char('?').map(|_| Question),
         char(':').map(|_| Colon),
-    ))(input)?;
+    )).parse(input)?;
     Ok(res)
 }
 
@@ -254,28 +254,6 @@ impl std::fmt::Display for BinOp {
     }
 }
 
-pub fn left_assoc<I, O, OP, E: ParseError<I>, F, G, H>(
-    mut operator: F,
-    mut next: G,
-    mut combine: H,
-) -> impl FnMut(I) -> IResult<I, O, E>
-where
-    I: Clone + InputLength,
-    F: Parser<I, OP, E>,
-    G: Parser<I, O, E>,
-    H: FnMut(O, OP, O) -> O,
-{
-    move |input: I| {
-        let (input, expr1) = next.parse(input)?;
-        let mut expr1 = Some(expr1);
-        let (input, expr) = fold_many0(pair(|i| operator.parse(i), |i| next.parse(i)),
-            || expr1.take().unwrap(),
-            |e1, (op, e2)| combine(e1, op, e2)
-        )(input)?;
-        Ok((input, expr))
-    }
-}
-
 fn bin_op(input: &str) -> IResult<&str, BinOp> {
     let (input, _) = multispace0(input)?;
     use BinOp::*;
@@ -293,7 +271,7 @@ fn bin_op(input: &str) -> IResult<&str, BinOp> {
         char('%').map(|_| Mod),
         char('>').map(|_| Gt),
         char('<').map(|_| Lt),
-    ))(input)?;
+    )).parse(input)?;
     Ok(res)
 }
 
@@ -312,18 +290,18 @@ fn expression(input: &str) -> IResult<&str, Expr> {
     terminated(
         expression_cond,
         pair(multispace0, eof),
-    )(input)
+    ).parse(input)
 }
 
 // Right assoc.
 fn expression_cond(input: &str) -> IResult<&str, Expr> {
     let (input, first) = expression_or(input)?;
-    let (input, extra) = opt(tuple((
+    let (input, extra) = opt((
         token(Token::Question),
         expression_cond,
         token(Token::Colon),
         expression_cond,
-    )))(input)?;
+    )).parse(input)?;
     let expr = if let Some((_, second, _, third)) = extra {
         Expr::Cond(Box::new(first), Box::new(second), Box::new(third))
     } else {
@@ -333,34 +311,34 @@ fn expression_cond(input: &str) -> IResult<&str, Expr> {
 }
 
 fn expression_or(input: &str) -> IResult<&str, Expr> {
-    left_assoc(bin_op_any(&[BinOp::Or]), expression_and, Expr::new_bin)(input)
+    left_assoc(expression_and, bin_op_any(&[BinOp::Or]), Expr::new_bin).parse(input)
 }
 
 fn expression_and(input: &str) -> IResult<&str, Expr> {
-    left_assoc(bin_op_any(&[BinOp::And]), expression_equal, Expr::new_bin)(input)
+    left_assoc(expression_equal, bin_op_any(&[BinOp::And]), Expr::new_bin).parse(input)
 }
 
 fn expression_equal(input: &str) -> IResult<&str, Expr> {
-    left_assoc(bin_op_any(&[BinOp::Eq, BinOp::Ne]), expression_not_equal, Expr::new_bin)(input)
+    left_assoc(expression_not_equal, bin_op_any(&[BinOp::Eq, BinOp::Ne]), Expr::new_bin).parse(input)
 }
 
 fn expression_not_equal(input: &str) -> IResult<&str, Expr> {
-    left_assoc(bin_op_any(&[BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge]), expression_add, Expr::new_bin)(input)
+    left_assoc(expression_add, bin_op_any(&[BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge]), Expr::new_bin).parse(input)
 }
 
 fn expression_add(input: &str) -> IResult<&str, Expr> {
-    left_assoc(bin_op_any(&[BinOp::Add, BinOp::Sub]), expression_mult, Expr::new_bin)(input)
+    left_assoc(expression_mult, bin_op_any(&[BinOp::Add, BinOp::Sub]), Expr::new_bin).parse(input)
 }
 
 fn expression_mult(input: &str) -> IResult<&str, Expr> {
-    left_assoc(bin_op_any(&[BinOp::Mult, BinOp::Div, BinOp::Mod]), expression_neg, Expr::new_bin)(input)
+    left_assoc(expression_neg, bin_op_any(&[BinOp::Mult, BinOp::Div, BinOp::Mod]), Expr::new_bin).parse(input)
 }
 
 fn expression_neg(input: &str) -> IResult<&str, Expr> {
     alt((
         preceded(token(Token::Neg), expression_neg).map(|e| Expr::Neg(Box::new(e))),
         expression_simple,
-    ))(input)
+    )).parse(input)
 }
 
 fn expression_simple(input: &str) -> IResult<&str, Expr> {
@@ -368,7 +346,7 @@ fn expression_simple(input: &str) -> IResult<&str, Expr> {
         token(Token::N).map(|_| Expr::N),
         number.map(Expr::Const),
         delimited(token(Token::LParen), expression_cond, token(Token::RParen)),
-    ))(input)
+    )).parse(input)
 }
 
 

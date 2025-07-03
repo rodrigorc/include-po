@@ -351,7 +351,7 @@ pub fn generate_rs_from_po(po_path: impl AsRef<Path>, out_path: impl AsRef<Path>
 
     write!(out,
 r#"
-#![allow(dead_code, text_direction_codepoint_in_literal)]
+#![allow(dead_code)]
 
 use std::borrow::Cow;
 pub struct Translator;

@@ -1,7 +1,7 @@
 [package]
 name = "include-po"
-version = "0.1.1"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 description = "Convert message catalogs (PO files) into Rust modules"
 license = "MIT"
 readme = "README.md"

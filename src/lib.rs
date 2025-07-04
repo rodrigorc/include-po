@@ -374,7 +374,7 @@ impl ::tr::Translator for Translator {{
         writeln!(out, r#"            {} => match string {{"#,
             match &ctxt {
                 None => "None",
-                Some(x) => { s = format!(r#"Some("{}")"#, x); &s }
+                Some(x) => { s = format!(r#"Some("{x}")"#); &s }
             }
         )?;
 
@@ -402,7 +402,7 @@ r#"
         writeln!(out, r#"            {} => match singular {{"#,
             match &ctxt {
                 None => "None",
-                Some(x) => { s = format!(r#"Some("{}")"#, x); &s }
+                Some(x) => { s = format!(r#"Some("{x}")"#); &s }
             }
         )?;
         for pmsg in pmessages {
@@ -411,7 +411,7 @@ r#"
             )?;
             // skip the 0 because it is the default, avoid the duplicate
             for (i, m) in pmsg.texts.iter().enumerate().take(plural_count).skip(1) {
-                write!(out, r#"{} => "{}", "#, i, m)?;
+                write!(out, r#"{i} => "{m}", "#)?;
             }
             writeln!(out, r#"_ => "{}" }} }}"#, pmsg.texts[0])?;
         }

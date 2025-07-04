@@ -1,15 +1,15 @@
-/// Module to parse and reformat plural expressions
-///
-/// PO files have the plural expression in a header, written as a single in C-like expression,
-/// usually with heavy use of the ternary conditional operator (?:).
-///
-/// We need to convert that expression into an quivalent Rust expression. This module does two
-/// things:
-///  * Parse the PO expression.
-///  * Format the Rust expression.
-///
-/// Reference implementation:
-/// https://github.com/autotools-mirror/gettext/blob/master/gettext-runtime/intl/plural.y
+//!! Module to parse and reformat plural expressions
+//!!
+//!! PO files have the plural expression in a header, written as a single in C-like expression,
+//!! usually with heavy use of the ternary conditional operator (?:).
+//!!
+//!! We need to convert that expression into an quivalent Rust expression. This module does two
+//!! things:
+//!!  * Parse the PO expression.
+//!!  * Format the Rust expression.
+//!!
+//!! Reference implementation:
+//!! <https://github.com/autotools-mirror/gettext/blob/master/gettext-runtime/intl/plural.y>
 
 use nom::{
     *,
